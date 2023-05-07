@@ -28,4 +28,4 @@ Then, you can run predictions:
 
 ## Features
 1. Long prompts
-2. Emphasizing words with round brackets and lowering the impact of the word with square brackets(Automatic1111 style)
+2. Emphasizing words with round brackets and lowering the impact of the word with square brackets (Automatic1111 style)
