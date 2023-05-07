@@ -15,11 +15,17 @@ Then, you can run predictions:
 
 **Example 1**
 ``` bash
-cog predict -i prompt="rebel-biker" -i body-type="masculine" -i negative_prompt="handbag"
+cog predict \
+-i prompt="rebel-biker" \
+-i body_type="masculine" \
+-i negative_prompt="handbag"
 ```
 **Example 2**
 ``` bash
-cog predict -i prompt="cyberpunk goth model" -i body-type="feminine" -i negative_prompt="high contrast, dark shadows"
+cog predict \
+-i prompt="cyberpunk goth model" \
+-i body_type="feminine" \
+-i negative_prompt="high contrast, dark shadows"
 ```
 
 ## Features
