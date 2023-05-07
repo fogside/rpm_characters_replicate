@@ -1,9 +1,11 @@
-# Stable Diffusion v2 Cog model
+# Ready Player Me inspired posed 3D characters
+## Stable Diffusion v1.5, ControlNet v1.1, Cog model 
+[![Replicate](https://replicate.com/stability-ai/stable-diffusion/badge)](https://replicate.com/fogside/rpm_characters_concepts)
 
-- This is a small change I'm making for testing 
-[![Replicate](https://replicate.com/stability-ai/stable-diffusion/badge)](https://replicate.com/stability-ai/stable-diffusion) 
+* [Cog packages machine learning models as standard containers.](https://github.com/replicate/cog)
 
-This is an implementation of the [Diffusers Stable Diffusion v2.1](https://huggingface.co/stabilityai/stable-diffusion-2-1) as a Cog model. [Cog packages machine learning models as standard containers.](https://github.com/replicate/cog)
+
+This model generates 3D renders of a character from two angles. It uses ControlNet for keeping the pose consistency. It uses pre-trained model for producing Ready Player Me inspired characters with consistent face and back renders.
 
 First, download the pre-trained weights:
 
@@ -11,4 +13,19 @@ First, download the pre-trained weights:
 
 Then, you can run predictions:
 
-    cog predict -i prompt="monkey scuba diving"
+**Example 1**
+``` bash
+    cog predict -i prompt="rebel-biker"\ 
+    -i body-type="masculine"\
+    -i negative_prompt="handbag"
+```
+**Example 2**
+``` bash
+    cog predict -i prompt="cyberpunk goth model"\ 
+    -i body-type="feminine"\
+    -i negative_prompt="high contrast, dark shadows"
+```
+
+## Features
+1. Long prompts
+2. Emphasizing words with round brackets and lowering the impact of the word with square brackets(Automatic1111 style)

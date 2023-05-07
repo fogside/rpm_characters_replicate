@@ -1,16 +1,16 @@
 import os
 from typing import List
+from PIL import Image
+from lpw_stable_diffusion import get_weighted_text_embeddings
 
 import torch
 from cog import BasePredictor, Input, Path
+from diffusers.utils import load_image
 from diffusers import (
-    StableDiffusionPipeline,
-    PNDMScheduler,
-    LMSDiscreteScheduler,
-    DDIMScheduler,
-    EulerDiscreteScheduler,
+    StableDiffusionControlNetPipeline,
     EulerAncestralDiscreteScheduler,
-    DPMSolverMultistepScheduler,
+    StableDiffusionImg2ImgPipeline,
+    ControlNetModel
 )
 from diffusers.pipelines.stable_diffusion.safety_checker import (
     StableDiffusionSafetyChecker,
@@ -18,75 +18,105 @@ from diffusers.pipelines.stable_diffusion.safety_checker import (
 
 # MODEL_ID refers to a diffusers-compatible model on HuggingFace
 # e.g. prompthero/openjourney-v2, wavymulder/Analog-Diffusion, etc
-MODEL_ID = "stabilityai/stable-diffusion-2-1"
+MODEL_ID = "readyplayerme/rpm_characters_concepts"
+MODEL_CONTROL_NET_ID = "lllyasviel/control_v11p_sd15_openpose"
 MODEL_CACHE = "diffusers-cache"
-SAFETY_MODEL_ID = "CompVis/stable-diffusion-safety-checker"
+final_size = 1024
+
+
+def generate_image(pipe_text2image, pipe_img2img, pose, prompt,
+                   negative_prompt, face_prompt, face_negative_prompt, mask, seed):
+    prompt_embeds, negative_prompt_embeds = get_weighted_text_embeddings(
+        pipe_text2image, prompt, negative_prompt)
+
+    image = pipe_text2image(num_inference_steps=20,
+                            image=pose,
+                            prompt_embeds=prompt_embeds,
+                            negative_prompt_embeds=negative_prompt_embeds,
+                            guidance_scale=5, controlnet_conditioning_scale=1.5).images[0]
+    # image.save(output_folder + "/" + file_name + ".png")
+    prompt_embeds, negative_prompt_embeds = get_weighted_text_embeddings(
+        pipe_img2img, prompt, negative_prompt)
+
+    image_upscaled = image.resize((final_size, final_size))
+    image_upscaled = pipe_img2img(image=image_upscaled, prompt_embeds=prompt_embeds,
+                                  negative_prompt_embeds=negative_prompt_embeds,
+                                  strength=0.26, guidance_scale=7, num_inference_steps=20).images[0]
+
+    face = image_upscaled.crop((80, 0, 80 + 250, 0 + 250))
+    prompt_embeds, negative_face_prompt = get_weighted_text_embeddings(
+        pipe=pipe_img2img, prompt=face_prompt, uncond_prompt=face_negative_prompt)
+    face = face.resize((512, 512))
+    face_upscaled = pipe_img2img(image=face, prompt_embeds=prompt_embeds, negative_prompt_embeds=negative_face_prompt,
+                                 strength=0.26, guidance_scale=4, num_inference_steps=30).images[0]
+    blended_image = blend_images(image_upscaled, face_upscaled, mask, 80, 0)
+    return blended_image
+
+
+def blend_images(base_image, overlay_image, mask, x, y):
+    overlay_image = overlay_image.resize((250, 250))
+    blended_overlay = Image.composite(overlay_image,
+                                      base_image.crop((x, y, x + overlay_image.width, y + overlay_image.height)), mask)
+
+    blended_image = base_image.copy()
+    blended_image.paste(blended_overlay, (x, y))
+
+    return blended_image
+
 
 class Predictor(BasePredictor):
     def setup(self):
         """Load the model into memory to make running multiple predictions efficient"""
         print("Loading pipeline...")
-        safety_checker = StableDiffusionSafetyChecker.from_pretrained(
-            SAFETY_MODEL_ID,
+        self.controlnet = ControlNetModel.from_pretrained(
+            MODEL_CONTROL_NET_ID,
             cache_dir=MODEL_CACHE,
-            local_files_only=True,
+            local_files_only=False, torch_dtype=torch.float16
         )
-        self.pipe = StableDiffusionPipeline.from_pretrained(
-            MODEL_ID,
-            safety_checker=safety_checker,
-            cache_dir=MODEL_CACHE,
-            local_files_only=True,
-        ).to("cuda")
+        # if limited by GPU memory, chunking the attention computation in addition to using fp16
+        self.pipe_controlnet = StableDiffusionControlNetPipeline.from_pretrained(MODEL_ID,
+                                                                                 cache_dir=MODEL_CACHE,
+                                                                                 local_files_only=True,
+                                                                                 controlnet=self.controlnet,
+                                                                                 torch_dtype=torch.float16).to("cuda")
+        self.pipe_controlnet.scheduler = EulerAncestralDiscreteScheduler.from_config(
+            self.pipe_controlnet.scheduler.config)
+        self.pipe_controlnet.enable_model_cpu_offload()
+        self.pipe_controlnet.safety_checker = None
+        # self.pipe_controlnet.enable_xformers_memory_efficient_attention()
+
+        self.pipe_img2img = StableDiffusionImg2ImgPipeline.from_pretrained(MODEL_ID,
+                                                                           cache_dir=MODEL_CACHE,
+                                                                           local_files_only=True,
+                                                                           torch_dtype=torch.float16).to("cuda")
+        self.pipe_img2img.scheduler = EulerAncestralDiscreteScheduler.from_config(
+            self.pipe_img2img.scheduler.config)
+        self.pipe_img2img.enable_model_cpu_offload()
+        self.pipe_img2img.safety_checker = None
+        # self.pipe_img2img.enable_xformers_memory_efficient_attention()
+        self.female_pose = load_image("assets/female.png")
+        self.male_pose = load_image("assets/male.png")
+        self.mask = Image.open("assets/mask_250.png").convert("RGBA")
+        # self.pipe = StableDiffusionPipeline.from_pretrained(
+        #     MODEL_ID,
+        #     cache_dir=MODEL_CACHE,
+        #     local_files_only=True
+        # ).to("cuda")
 
     @torch.inference_mode()
     def predict(
         self,
         prompt: str = Input(
             description="Input prompt",
-            default="a photo of an astronaut riding a horse on mars",
+            default="japanese clothes, Jojo style, Curly top haircut",
         ),
         negative_prompt: str = Input(
             description="Specify things to not see in the output",
-            default=None,
+            default="handbag",
         ),
-        width: int = Input(
-            description="Width of output image. Maximum size is 1024x768 or 768x1024 because of memory limits",
-            choices=[128, 256, 384, 448, 512, 576, 640, 704, 768, 832, 896, 960, 1024],
-            default=768,
-        ),
-        height: int = Input(
-            description="Height of output image. Maximum size is 1024x768 or 768x1024 because of memory limits",
-            choices=[128, 256, 384, 448, 512, 576, 640, 704, 768, 832, 896, 960, 1024],
-            default=768,
-        ),
-        prompt_strength: float = Input(
-            description="Prompt strength when using init image. 1.0 corresponds to full destruction of information in init image",
-            default=0.8,
-        ),
-        num_outputs: int = Input(
-            description="Number of images to output.",
-            ge=1,
-            le=4,
-            default=1,
-        ),
-        num_inference_steps: int = Input(
-            description="Number of denoising steps", ge=1, le=500, default=50
-        ),
-        guidance_scale: float = Input(
-            description="Scale for classifier-free guidance", ge=1, le=20, default=7.5
-        ),
-        scheduler: str = Input(
-            default="DPMSolverMultistep",
-            choices=[
-                "DDIM",
-                "K_EULER",
-                "DPMSolverMultistep",
-                "K_EULER_ANCESTRAL",
-                "PNDM",
-                "KLMS",
-            ],
-            description="Choose a scheduler.",
-        ),
+        body_type: str = Input(
+            description="Choose body type. Only 2 are available at the moment.",
+            choices=["feminine", "masculine"], default="feminine"),
         seed: int = Input(
             description="Random seed. Leave blank to randomize the seed", default=None
         ),
@@ -96,49 +126,45 @@ class Predictor(BasePredictor):
             seed = int.from_bytes(os.urandom(2), "big")
         print(f"Using seed: {seed}")
 
-        if width * height > 786432:
-            raise ValueError(
-                "Maximum size is 1024x768 or 768x1024 pixels, because of memory limits. Please select a lower width or height."
-            )
+        # generator = torch.Generator("cuda").manual_seed(seed)
+        # output = self.pipe_controlnet(
+        #     prompt=prompt,
+        #     negative_prompt=negative_prompt,
+        #     width=512,
+        #     height=512,
+        #     guidance_scale=4,
+        #     generator=generator,
+        #     num_inference_steps=20,
+        # )
 
-        self.pipe.scheduler = make_scheduler(scheduler, self.pipe.scheduler.config)
+        if body_type == "feminine":
+            pose = self.female_pose
+            keyword = "femalerpm"
+            negative_word = "male, man"
+        else:
+            pose = self.male_pose
+            keyword = "masculine malerpm"
+            negative_word = "feminine, female"
 
-        generator = torch.Generator("cuda").manual_seed(seed)
-        output = self.pipe(
-            prompt=[prompt] * num_outputs if prompt is not None else None,
-            negative_prompt=[negative_prompt] * num_outputs
-            if negative_prompt is not None
-            else None,
-            width=width,
-            height=height,
-            guidance_scale=guidance_scale,
-            generator=generator,
-            num_inference_steps=num_inference_steps,
-        )
+        # style = "japanese clothes, Jojo style, Curly top haircut"
+        base_prompt = f"cute ((3d render)) of (({prompt})), (({keyword})), (trending on artstation, 4k),  ((crisp lines)), high contrast, 3d cinematic quality light, studio light,"\
+            "rim light, trending on artstation, 8k,  smooth, sharp focus, 8 k, octane render, rendered in octane, clean background, #3D #Art #DigitalArt #Sculpture"
+        base_negative_prompt = f"(({negative_prompt})), {negative_word}, (((monochrome))), blurry, border, frame, blurry, pixelated, low quality, noisy background, focus on chest, naked chest, blurry, border, frame, blurry, pixelated, low quality, uncovered ass, censored, branded, brand, boring outfit, extra face, noisy background, big head, focused on chest, ugly, bad proportions"
+        negative_face_prompt = f"{negative_word}, low-quality, realistic photo, creepy face, naked, tits, naked torso, ugly, smashed face, cartoon, open mouth, borders, several frames, ((ugly)), ((morbid)), (mutilated), extra fingers, mutated hands, (poorly drawn face), (deformed), blurry, (bad anatomy), (bad proportions), (extra limbs), cloned face, out of frame, (malformed limbs), (missing arms), (missing legs), (extra arms), (extra legs),"\
+            "mutated hands, (fused fingers), (too many fingers), (long neck)"
+        prompt_face = f"detailed cute rpm face, {base_prompt}"
+        output = generate_image(pipe_text2image=self.pipe_controlnet, pipe_img2img=self.pipe_img2img, pose=pose, prompt=base_prompt,
+                                negative_prompt=base_negative_prompt, face_prompt=prompt_face,
+                                face_negative_prompt=negative_face_prompt, mask=self.mask, seed=seed)
 
         output_paths = []
-        for i, sample in enumerate(output.images):
-            if output.nsfw_content_detected and output.nsfw_content_detected[i]:
-                continue
+        output_path = f"/tmp/out-0.png"
+        output.save(output_path)
+        output_paths.append(Path(output_path))
 
-            output_path = f"/tmp/out-{i}.png"
-            sample.save(output_path)
-            output_paths.append(Path(output_path))
-
-        if len(output_paths) == 0:
-            raise Exception(
-                f"NSFW content detected. Try running it again, or try a different prompt."
-            )
+        # if len(output_paths) == 0:
+        #     raise Exception(
+        #         f"NSFW content detected. Try running it again, or try a different prompt."
+        #     )
 
         return output_paths
-
-
-def make_scheduler(name, config):
-    return {
-        "PNDM": PNDMScheduler.from_config(config),
-        "KLMS": LMSDiscreteScheduler.from_config(config),
-        "DDIM": DDIMScheduler.from_config(config),
-        "K_EULER": EulerDiscreteScheduler.from_config(config),
-        "K_EULER_ANCESTRAL": EulerAncestralDiscreteScheduler.from_config(config),
-        "DPMSolverMultistep": DPMSolverMultistepScheduler.from_config(config),
-    }[name]
