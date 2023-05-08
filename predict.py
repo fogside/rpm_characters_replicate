@@ -33,7 +33,7 @@ def generate_image(pipe_text2image, pipe_img2img, pose, prompt,
                              prompt_embeds=prompt_embeds,
                              negative_prompt_embeds=negative_prompt_embeds,
                              guidance_scale=5, controlnet_conditioning_scale=1.5)
-    if output.nsfw_content_detected:
+    if output.nsfw_content_detected[0]:
         raise Exception(
             f"NSFW content detected. Try running it again, or try a different prompt.")
 
