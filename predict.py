@@ -91,9 +91,10 @@ class Predictor(BasePredictor):
                                                                            requires_safety_checker=False,
                                                                            local_files_only=True,
                                                                            torch_dtype=torch.float16).to("cuda")
+        self.pipe_img2img.scheduler = EulerAncestralDiscreteScheduler.from_config(
+            self.pipe_controlnet.scheduler.config)
 
         self.pipe_img2img.enable_model_cpu_offload()
-        self.pipe_img2img.safety_checker = None
         self.female_pose = load_image("assets/female.png")
         self.male_pose = load_image("assets/male.png")
         self.mask = Image.open("assets/mask_250.png").convert("RGBA")
