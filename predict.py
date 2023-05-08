@@ -130,7 +130,6 @@ class Predictor(BasePredictor):
             keyword = "masculine malerpm"
             negative_word = "feminine, female"
 
-        # style = "japanese clothes, Jojo style, Curly top haircut"
         base_prompt = f"cute ((3d render)) of (({prompt})), (({keyword})), (trending on artstation, 4k),  ((crisp lines)), high contrast, 3d cinematic quality light, studio light,"\
             "rim light, trending on artstation, 8k,  smooth, sharp focus, 8 k, octane render, rendered in octane, clean background, #3D #Art #DigitalArt #Sculpture"
         base_negative_prompt = f"(({negative_prompt})), {negative_word}, (((monochrome))), blurry, border, frame, blurry, pixelated, low quality, noisy background, focus on chest, naked chest, blurry, border, frame, blurry, pixelated, low quality, uncovered ass, censored, branded, brand, boring outfit, extra face, noisy background, big head, focused on chest, ugly, bad proportions"
