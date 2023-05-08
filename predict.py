@@ -12,9 +12,6 @@ from diffusers import (
     StableDiffusionImg2ImgPipeline,
     ControlNetModel
 )
-from diffusers.pipelines.stable_diffusion.safety_checker import (
-    StableDiffusionSafetyChecker,
-)
 
 # MODEL_ID refers to a diffusers-compatible model on HuggingFace
 # e.g. prompthero/openjourney-v2, wavymulder/Analog-Diffusion, etc
@@ -22,24 +19,30 @@ MODEL_ID = "readyplayerme/rpm_characters_concepts"
 MODEL_CONTROL_NET_ID = "lllyasviel/control_v11p_sd15_openpose"
 MODEL_CACHE = "diffusers-cache"
 final_size = 1024
+nsfw_police_officer = Path("assets/nsfw_police_officer.jpg")
 
 
 def generate_image(pipe_text2image, pipe_img2img, pose, prompt,
                    negative_prompt, face_prompt, face_negative_prompt, mask, seed):
     prompt_embeds, negative_prompt_embeds = get_weighted_text_embeddings(
         pipe_text2image, prompt, negative_prompt)
+    generator = torch.Generator("cuda").manual_seed(seed)
+    output = pipe_text2image(num_inference_steps=20,
+                             image=pose,
+                             generator=generator,
+                             prompt_embeds=prompt_embeds,
+                             negative_prompt_embeds=negative_prompt_embeds,
+                             guidance_scale=5, controlnet_conditioning_scale=1.5)
+    if output.nsfw_content_detected:
+        raise Exception(
+            f"NSFW content detected. Try running it again, or try a different prompt.")
 
-    image = pipe_text2image(num_inference_steps=20,
-                            image=pose,
-                            prompt_embeds=prompt_embeds,
-                            negative_prompt_embeds=negative_prompt_embeds,
-                            guidance_scale=5, controlnet_conditioning_scale=1.5).images[0]
-    # image.save(output_folder + "/" + file_name + ".png")
+    image = output.images[0]
     prompt_embeds, negative_prompt_embeds = get_weighted_text_embeddings(
         pipe_img2img, prompt, negative_prompt)
 
     image_upscaled = image.resize((final_size, final_size))
-    image_upscaled = pipe_img2img(image=image_upscaled, prompt_embeds=prompt_embeds,
+    image_upscaled = pipe_img2img(image=image_upscaled, generator=generator, prompt_embeds=prompt_embeds,
                                   negative_prompt_embeds=negative_prompt_embeds,
                                   strength=0.26, guidance_scale=7, num_inference_steps=20).images[0]
 
@@ -73,35 +76,27 @@ class Predictor(BasePredictor):
             cache_dir=MODEL_CACHE,
             local_files_only=False, torch_dtype=torch.float16
         )
-        # if limited by GPU memory, chunking the attention computation in addition to using fp16
         self.pipe_controlnet = StableDiffusionControlNetPipeline.from_pretrained(MODEL_ID,
                                                                                  cache_dir=MODEL_CACHE,
                                                                                  local_files_only=True,
                                                                                  controlnet=self.controlnet,
                                                                                  torch_dtype=torch.float16).to("cuda")
+
         self.pipe_controlnet.scheduler = EulerAncestralDiscreteScheduler.from_config(
             self.pipe_controlnet.scheduler.config)
         self.pipe_controlnet.enable_model_cpu_offload()
-        self.pipe_controlnet.safety_checker = None
-        # self.pipe_controlnet.enable_xformers_memory_efficient_attention()
-
         self.pipe_img2img = StableDiffusionImg2ImgPipeline.from_pretrained(MODEL_ID,
                                                                            cache_dir=MODEL_CACHE,
+                                                                           safety_checker=None,
+                                                                           requires_safety_checker=False,
                                                                            local_files_only=True,
                                                                            torch_dtype=torch.float16).to("cuda")
-        self.pipe_img2img.scheduler = EulerAncestralDiscreteScheduler.from_config(
-            self.pipe_img2img.scheduler.config)
+
         self.pipe_img2img.enable_model_cpu_offload()
         self.pipe_img2img.safety_checker = None
-        # self.pipe_img2img.enable_xformers_memory_efficient_attention()
         self.female_pose = load_image("assets/female.png")
         self.male_pose = load_image("assets/male.png")
         self.mask = Image.open("assets/mask_250.png").convert("RGBA")
-        # self.pipe = StableDiffusionPipeline.from_pretrained(
-        #     MODEL_ID,
-        #     cache_dir=MODEL_CACHE,
-        #     local_files_only=True
-        # ).to("cuda")
 
     @torch.inference_mode()
     def predict(
@@ -126,17 +121,6 @@ class Predictor(BasePredictor):
             seed = int.from_bytes(os.urandom(2), "big")
         print(f"Using seed: {seed}")
 
-        # generator = torch.Generator("cuda").manual_seed(seed)
-        # output = self.pipe_controlnet(
-        #     prompt=prompt,
-        #     negative_prompt=negative_prompt,
-        #     width=512,
-        #     height=512,
-        #     guidance_scale=4,
-        #     generator=generator,
-        #     num_inference_steps=20,
-        # )
-
         if body_type == "feminine":
             pose = self.female_pose
             keyword = "femalerpm"
@@ -153,18 +137,16 @@ class Predictor(BasePredictor):
         negative_face_prompt = f"{negative_word}, low-quality, realistic photo, creepy face, naked, tits, naked torso, ugly, smashed face, cartoon, open mouth, borders, several frames, ((ugly)), ((morbid)), (mutilated), extra fingers, mutated hands, (poorly drawn face), (deformed), blurry, (bad anatomy), (bad proportions), (extra limbs), cloned face, out of frame, (malformed limbs), (missing arms), (missing legs), (extra arms), (extra legs),"\
             "mutated hands, (fused fingers), (too many fingers), (long neck)"
         prompt_face = f"detailed cute rpm face, {base_prompt}"
-        output = generate_image(pipe_text2image=self.pipe_controlnet, pipe_img2img=self.pipe_img2img, pose=pose, prompt=base_prompt,
-                                negative_prompt=base_negative_prompt, face_prompt=prompt_face,
-                                face_negative_prompt=negative_face_prompt, mask=self.mask, seed=seed)
+        try:
+            output = generate_image(pipe_text2image=self.pipe_controlnet, pipe_img2img=self.pipe_img2img, pose=pose, prompt=base_prompt,
+                                    negative_prompt=base_negative_prompt, face_prompt=prompt_face,
+                                    face_negative_prompt=negative_face_prompt, mask=self.mask, seed=seed)
+        except Exception as e:
+            return [nsfw_police_officer]
 
         output_paths = []
-        output_path = f"/tmp/out-0.png"
+        output_path = f"/tmp/output.png"
         output.save(output_path)
         output_paths.append(Path(output_path))
-
-        # if len(output_paths) == 0:
-        #     raise Exception(
-        #         f"NSFW content detected. Try running it again, or try a different prompt."
-        #     )
 
         return output_paths
